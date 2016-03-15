@@ -745,7 +745,7 @@ type EvalContext struct {
 	// The transaction timestamp. Needs to stay table throughout the
 	// transaction. Used for now(), current_timestamp(),
 	// transaction_timestamp() and the like.
-	TxnTimestamp roachpb.Timestamp
+	txnTimestamp roachpb.Timestamp
 	ReCache      *RegexpCache
 	GetLocation  func() (*time.Location, error)
 	Args         MapArgs
@@ -763,10 +763,14 @@ func (ctx *EvalContext) GetStmtTimestamp() DTimestamp {
 // GetTxnTimestamp retrieves the current transaction timestamp as per
 // the evaluation context. The timestamp is guaranteed to be valid.
 func (ctx *EvalContext) GetTxnTimestamp() roachpb.Timestamp {
-	if ctx.TxnTimestamp == roachpb.ZeroTimestamp {
+	if ctx.txnTimestamp == roachpb.ZeroTimestamp {
 		panic("invalid transaction timestamp in EvalContext")
 	}
-	return ctx.TxnTimestamp
+	return ctx.txnTimestamp
+}
+
+func (ctx *EvalContext) SetTxnTimestamp(ts roachpb.Timestamp) {
+	ctx.txnTimestamp = roachpb.ZeroTimestamp
 }
 
 var defaultContext = EvalContext{

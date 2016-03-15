@@ -64,7 +64,7 @@ func makePlanner() *planner {
 func (p *planner) setTxn(txn *client.Txn) {
 	p.txn = txn
 	if txn != nil {
-		p.evalCtx.TxnTimestamp = txn.Proto.OrigTimestamp
+		p.evalCtx.SetTxnTimestamp(txn.Proto.OrigTimestamp)
 	}
 }
 
