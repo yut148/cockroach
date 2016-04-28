@@ -32,7 +32,6 @@ import (
 	opentracing "github.com/opentracing/opentracing-go"
 	"google.golang.org/grpc"
 
-	snappy "github.com/cockroachdb/c-snappy"
 	"github.com/cockroachdb/cmux"
 	"github.com/cockroachdb/cockroach/client"
 	"github.com/cockroachdb/cockroach/gossip"
@@ -56,8 +55,6 @@ import (
 var (
 	// Allocation pool for gzip writers.
 	gzipWriterPool sync.Pool
-	// Allocation pool for snappy writers.
-	snappyWriterPool sync.Pool
 )
 
 // Server is the cockroach server node.
@@ -429,7 +426,7 @@ func (s *Server) Stop() {
 }
 
 // ServeHTTP is necessary to implement the http.Handler interface. It
-// will snappy a response if the appropriate request headers are set.
+// will gzip a response if the appropriate request headers are set.
 func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	// This is our base handler, so catch all panics and make sure they stick.
 	defer log.FatalOnPanic()
@@ -438,13 +435,7 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Cache-control", "no-cache")
 
 	ae := r.Header.Get(util.AcceptEncodingHeader)
-	switch {
-	case strings.Contains(ae, util.SnappyEncoding):
-		w.Header().Set(util.ContentEncodingHeader, util.SnappyEncoding)
-		s := newSnappyResponseWriter(w)
-		defer s.Close()
-		w = s
-	case strings.Contains(ae, util.GzipEncoding):
+	if strings.Contains(ae, util.GzipEncoding) {
 		w.Header().Set(util.ContentEncodingHeader, util.GzipEncoding)
 		gzw := newGzipResponseWriter(w)
 		defer gzw.Close()
@@ -456,58 +447,41 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 type gzipResponseWriter struct {
 	io.WriteCloser
 	http.ResponseWriter
+	started bool
 }
 
 func newGzipResponseWriter(w http.ResponseWriter) *gzipResponseWriter {
-	var gz *gzip.Writer
-	if gzI := gzipWriterPool.Get(); gzI == nil {
-		gz = gzip.NewWriter(w)
-	} else {
-		gz = gzI.(*gzip.Writer)
-		gz.Reset(w)
+	return &gzipResponseWriter{WriteCloser: nil, ResponseWriter: w}
+}
+
+func (gzw *gzipResponseWriter) Write(b []byte) (int, error) {
+	if !gzw.started {
+		gzw.started = true
+		if strings.Contains(gzw.Header().Get("Content-Encoding"), util.GzipEncoding) {
+			// Response is already gzip, let's not do it again.
+		} else {
+			var gz *gzip.Writer
+			if gzI := gzipWriterPool.Get(); gzI == nil {
+				gz = gzip.NewWriter(gzw)
+			} else {
+				gz = gzI.(*gzip.Writer)
+				gz.Reset(gzw)
+			}
+			gzw.WriteCloser = gz
+		}
 	}
-	return &gzipResponseWriter{WriteCloser: gz, ResponseWriter: w}
-}
 
-func (w *gzipResponseWriter) Write(b []byte) (int, error) {
-	return w.WriteCloser.Write(b)
-}
-
-func (w *gzipResponseWriter) Close() {
-	if w.WriteCloser != nil {
-		w.WriteCloser.Close()
-		gzipWriterPool.Put(w.WriteCloser)
-		w.WriteCloser = nil
+	if gzw.WriteCloser != nil {
+		return gzw.WriteCloser.Write(b)
 	}
+	return gzw.ResponseWriter.Write(b)
 }
 
-type snappyResponseWriter struct {
-	io.Writer
-	http.ResponseWriter
-}
-
-func newSnappyResponseWriter(w http.ResponseWriter) *snappyResponseWriter {
-	var s *snappy.Writer
-	if sI := snappyWriterPool.Get(); sI == nil {
-		// TODO(pmattis): It would be better to use the C++ snappy code
-		// like rpc/codec is doing. Would have to copy the snappy.Writer
-		// implementation from snappy-go.
-		s = snappy.NewWriter(w)
-	} else {
-		s = sI.(*snappy.Writer)
-		s.Reset(w)
-	}
-	return &snappyResponseWriter{Writer: s, ResponseWriter: w}
-}
-
-func (w *snappyResponseWriter) Write(b []byte) (int, error) {
-	return w.Writer.Write(b)
-}
-
-func (w *snappyResponseWriter) Close() {
-	if w.Writer != nil {
-		snappyWriterPool.Put(w.Writer)
-		w.Writer = nil
+func (gzw *gzipResponseWriter) Close() {
+	if gzw.WriteCloser != nil {
+		gzw.WriteCloser.Close()
+		gzipWriterPool.Put(gzw.WriteCloser)
+		gzw.WriteCloser = nil
 	}
 }
 
